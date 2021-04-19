@@ -1,0 +1,170 @@
+---
+apiVersion: v1
+kind: Template
+labels:
+  app: file-server
+  template: file-server
+metadata:
+  annotations:
+    description: webdav file server
+  name: file-server
+
+objects:
+- kind: ImageStream
+  apiVersion: v1
+  metadata:
+    labels:
+      app: ${FILE_SERVER_NAME}
+    name: ${FILE_SERVER_NAME}
+- kind: BuildConfig
+  apiVersion: v1
+  metadata:
+    labels:
+      app: ${FILE_SERVER_NAME}
+    name: ${FILE_SERVER_NAME}
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: ${FILE_SERVER_IMAGE_STREAM_TAG}
+    resources: {}
+    source:
+      type: Git
+      git:
+        ref: ${REPO_REF}
+        uri: ${REPO_URL}
+    strategy:
+      type: Docker
+      dockerStrategy:
+        env:
+          - name: GIT_SSL_NO_VERIFY
+            value: 'true'
+    triggers:
+    - type: ConfigChange
+    successfulBuildsHistoryLimit: 2
+    failedBuildsHistoryLimit: 2
+# Route
+- kind: Route
+  apiVersion: v1
+  metadata:
+    name: ${FILE_SERVER_NAME}
+    annotations:
+      template.openshift.io/expose-uri: http://{.spec.host}{.spec.path}
+  spec:
+    to:
+      kind: Service
+      name: ${FILE_SERVER_NAME}
+# persistent volume
+- kind: PersistentVolumeClaim
+  apiVersion: v1
+  metadata:
+    name: "${FILE_SERVER_NAME}"
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: 100Gi
+# file server deployment
+- kind: DeploymentConfig
+  apiVersion: v1
+  metadata:
+    name: ${FILE_SERVER_NAME}
+  spec:
+    replicas: 1
+    selector:
+      name: ${FILE_SERVER_NAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          name: ${FILE_SERVER_NAME}
+      spec:
+        containers:
+        - name: ${FILE_SERVER_NAME}
+          image: ${FILE_SERVER_IMAGE_STREAM_TAG}
+          imagePullPolicy: IfNotPresent
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 3
+            timeoutSeconds: 240
+          livenessProbe:
+            failureThreshold: 2
+            httpGet:
+              path: /
+              port: 8081
+            initialDelaySeconds: 420
+            periodSeconds: 360
+            timeoutSeconds: 240
+          resources:
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+            requests:
+              memory: "512Mi"
+              cpu: "50m"
+          securityContext:
+            capabilities: {}
+            privileged: false
+          terminationMessagePath: /dev/termination-log
+          volumeMounts:
+          - mountPath: /www
+            name: ${FILE_SERVER_NAME}-data
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        volumes:
+        - name: ${FILE_SERVER_NAME}-data
+          persistentVolumeClaim:
+            claimName: ${FILE_SERVER_NAME}
+    triggers:
+    - type: "ConfigChange" 
+    - type: "ImageChange" 
+      imageChangeParams:
+        automatic: true
+        containerNames:
+          - ${FILE_SERVER_NAME}
+        from:
+          kind: "ImageStreamTag"
+          name: ${FILE_SERVER_IMAGE_STREAM_TAG}
+# Listening on TCP port 80
+- kind: Service
+  apiVersion: v1
+  metadata:
+    name: "${FILE_SERVER_NAME}"
+    annotations:
+      service.alpha.openshift.io/dependencies: '[{"name": "${FILE_SERVER_NAME}",
+        "namespace": "", "kind": "Service"}]'
+      service.openshift.io/infrastructure: 'true'
+    creationTimestamp:
+  spec:
+    ports:
+    - name: web
+      protocol: TCP
+      port: 80
+      targetPort: 8081
+      nodePort: 0
+    selector:
+      name: "${FILE_SERVER_NAME}"
+    type: ClusterIP
+    sessionAffinity: None
+
+parameters:
+- description: Git repository with Dockerfile.
+  displayName: Repository URL
+  name: REPO_URL
+  value: https://github.com/virt-s1/file-server.git
+- description: The git ref or tag to use for customization.
+  displayName: Git Reference
+  name: REPO_REF
+  value: master
+- description: File server name.
+  displayName: Webdav File Server Name
+  name: FILE_SERVER_NAME
+  value: file-server
+- name: FILE_SERVER_IMAGE_STREAM_TAG
+  displayName: File Server ImageStreamTag
+  description: Name of the ImageStreamTag to be used for the file server image.
+  value: file-server:latest
